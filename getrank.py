@@ -5,6 +5,7 @@ import subprocess
 import json
 import threading
 import time
+import sys
 
 class LCU:
     def __init__(self):
@@ -62,17 +63,84 @@ class Summoner:
         self.rankStats = self.lcu.get("lol-ranked/v1/ranked-stats/"+self.summoner['puuid']).json()
         options = ["RANKED_SOLO_5x5", "RANKED_FLEX_SR", "RANKED_FLEX_TT", "RANKED_TFT"]
         if queueType in options:
-            return self.rankStats["queueMap"][queueType]["tier"]+" "+self.rankStats["queueMap"][queueType]["division"]
+            return self.summoner['displayName'].decode("gb2312"), self.rankStats["queueMap"][queueType]["tier"]+" "+self.rankStats["queueMap"][queueType]["division"] + " " + str(self.rankStats["queueMap"][queueType]['leaguePoints'])
         else:
             print "Please input a valid queue type"
         return
 
-def printMenu():
-    print """
-    Hello Summoner, what would you like to know today?
-    1. Get rank of a single summoner
-    2. Get rank of my team
-    """
+    def getChampStats(self, championId):
+        self.lcu.get("/lol-career-stats/v1/summoner-stats/"+self.summoner['puuid']+"/9/rank5solo/SUPPORT?championId=111")
+
+
+class RankTeam(threading.Thread):
+
+    def __init__(self, lcu):
+        threading.Thread.__init__(self)
+        
+        self.event = threading.Event()
+        self.lcu = lcu
+        self._is_running = True
+    
+    def run(self):
+        
+        while True:
+            time.sleep(1)
+            while not self.event.is_set():
+                # check for champ select
+                self.res = self.lcu.get("lol-champ-select/v1/session")
+                if self.res.status_code == 200:
+                    self.printRankTeam()
+                    self.event.set()
+                else:
+                    self.event.wait(1)
+                    if not self._is_running:
+                        break
+            
+            # exitted current champ select. wait for new champ select
+            if self.lcu.get("lol-champ-select/v1/session").status_code != 200:
+                self.event.clear()
+            
+            # exitting thread
+            if not self._is_running:
+                break
+
+    def printRankTeam(self):
+        teamJson = self.res.json()
+        print "\nYour team:"
+        for member in teamJson["myTeam"]:
+            s = Summoner(id=member['summonerId'])
+            if s.success:
+                print s.summoner['displayName'].decode("gb2312"), s.getRankStats('RANKED_SOLO_5x5')
+
+        return
+
+class Menu(threading.Thread):
+
+    def __init__(self):
+        threading.Thread.__init__(self)
+        self._is_running = True
+        return
+
+    def run(self):
+        while True:
+            self.printMenu()
+            choice = raw_input(">")
+            self.handleInput(choice)
+
+    def printMenu(self):
+        print """
+        Hello Summoner, what would you like to know today?
+        1. Get rank of a single summoner
+        2. Get rank of my team
+        """
+
+    def handleInput(self, choice):
+        if choice == 'q':
+            self._is_running = False
+            sys.exit(1)
+        if choice == '1':
+            printRankSummoner()
+
 
 def printRankSummoner():
     options = ["RANKED_SOLO_5x5", "RANKED_FLEX_SR", "RANKED_FLEX_TT", "RANKED_TFT"]
@@ -101,36 +169,20 @@ def printRankSummoner():
     else:
         print target.getRankStats(queueMap)
 
-def printRankTeam():
+def main():
+    # Looping menu
     lcu = LCU()
     if not lcu.connected:
         return
-    
-    res = lcu.get("lol-champ-select/v1/session")
-    if res.status_code != 200:
-        print "Are you sure you are in champ select yet?"
-        return
-
-    res = res.json()
-    for member in res["myTeam"]:
-        s = Summoner(id=member['summonerId'])
-        if s.success:
-            print s.summoner['displayName'], s.getRankStats('RANKED_SOLO_5x5')
-    
-    return
-
-
-def main():
-    # Looping menu
+    r = RankTeam(lcu)
+    menu = Menu()
+    menu.start()
+    r.start()
     while True:
-        printMenu()
-        choice = raw_input(">")
-        if choice == 'q':
+        if not menu._is_running:
+            r._is_running = False
             break
-        elif choice == '1':
-            printRankSummoner()
-        elif choice == '2':
-            printRankTeam()
+
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 if __name__ == "__main__":
